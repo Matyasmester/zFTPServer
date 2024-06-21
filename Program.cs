@@ -9,6 +9,8 @@
             server.Start();
 
             Console.ReadKey();
+
+            server.Dispose();
         }
     }
 }

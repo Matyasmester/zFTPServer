@@ -8,9 +8,12 @@ using System.Threading.Tasks;
 
 namespace FTPServer
 {
-    public class FtpServer
+    public class FtpServer : IDisposable
     {
         private TcpListener listener;
+        private TcpListener? dataListener;
+
+        private TcpClient? dataClient;
 
         private readonly string LOG_PATH = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ftpserverlog.txt");
 
@@ -18,16 +21,20 @@ namespace FTPServer
         private readonly string SharingFolderPath = Path.Combine(Directory.GetCurrentDirectory(), SharingFolderName);
 
         private const int defaultPort = 5555;
-        public FtpServer(IPAddress IP, int port)
+        private int dataPort;
+
+        public FtpServer(IPAddress IP, int port, int dataPort)
         {
             listener = new TcpListener(IP, port);
+
+            this.dataPort = dataPort;
 
             if(!Directory.Exists(SharingFolderPath)) Directory.CreateDirectory(SharingFolderPath);
 
             Directory.SetCurrentDirectory(SharingFolderPath);
         }
 
-        public FtpServer() : this(IPAddress.Any, defaultPort)
+        public FtpServer() : this(IPAddress.Any, defaultPort, defaultPort + 1)
         {
 
         }
@@ -46,6 +53,8 @@ namespace FTPServer
         public void Dispose()
         {
             listener.Dispose();
+            dataListener?.Dispose();
+            dataClient?.Dispose();
         }
 
         private void WriteToLogFile(string content)
@@ -77,6 +86,10 @@ namespace FTPServer
                     if(string.IsNullOrWhiteSpace(args)) response = GetDirectoryListing(currentDirectory);
                     else response = GetDirectoryListing(args);
                     break;
+                case "RETR":
+                case "GET":
+                    response = Retrieve(args).Result;
+                    break;
                 default:
                     break;
             }
@@ -102,15 +115,70 @@ namespace FTPServer
             else return Path.Combine(Directory.GetCurrentDirectory(), path);
         }
 
-        /*private string Retrieve(string fileName)
+        private async Task<string> Retrieve(string fileName)
         {
             string response = string.Empty;
             string fullPath = FullyQualifyPath(fileName);
 
             if(!IsValidPath(fullPath, ref response)) return response;
 
+            while (dataClient == null) await Task.Delay(40);
 
-        }*/
+            NetworkStream dataStream = dataClient.GetStream();
+
+            if (Directory.Exists(fullPath))
+            {
+                DirectoryInfo dirInfo = new DirectoryInfo(fullPath);
+                response = "Later lol";
+            }
+            else
+            {
+                FileInfo fileInfo = new FileInfo(fullPath);
+                
+                byte[] bytes = EncodeSingleFile(fileInfo);
+
+                SendBytes(bytes, dataStream);
+
+                response = "[+] Successfully retrieved file.";
+            }
+
+            return response;
+        }
+
+        private void SendBytes(byte[] bytes, NetworkStream dataStream)
+        {
+            int bufferSize = 1024;
+
+            int dataLength = bytes.Length;
+
+            byte[] dataLengthBytes = BitConverter.GetBytes(dataLength);
+
+            dataStream.Write(dataLengthBytes, 0, dataLengthBytes.Length);
+
+            int bSent = 0;
+            int bLeft = dataLength;
+
+            while (bLeft > 0)
+            {
+                int currentSize = Math.Min(bLeft, bufferSize);
+
+                dataStream.Write(bytes, bSent, currentSize);
+
+                bSent += currentSize;
+                bLeft -= currentSize;
+            }
+        }
+
+        private byte[] EncodeSingleFile(FileInfo info)
+        {
+            using FileStream stream = info.OpenRead();
+
+            byte[] buffer = new byte[stream.Length];
+
+            stream.Read(buffer, 0, buffer.Length);
+
+            return buffer;
+        }
 
         private bool IsValidPath(string path, ref string response)
         {
@@ -128,9 +196,9 @@ namespace FTPServer
 
             string fullPath = FullyQualifyPath(path);
 
-            if (!Directory.Exists(fullPath))
+            if (!Directory.Exists(fullPath) && !File.Exists(fullPath))
             {
-                response = "[!] No such directory.";
+                response = "[!] No such file or directory.";
                 return false;
             }
 
@@ -179,6 +247,15 @@ namespace FTPServer
             return retval;
         }
 
+        private void HandleDataConnection(IAsyncResult result)
+        {
+            if (dataListener == null) return;
+
+            dataClient = dataListener.EndAcceptTcpClient(result);
+
+            dataListener.BeginAcceptTcpClient(HandleDataConnection, dataListener);
+        }
+
         private void HandleTcpConnection(IAsyncResult result)
         {
             TcpClient client = listener.EndAcceptTcpClient(result);
@@ -193,6 +270,11 @@ namespace FTPServer
 
             using StreamWriter writer = new StreamWriter(stream);
             using StreamReader reader = new StreamReader(stream);
+
+            dataListener = new TcpListener(remoteEndPoint.Address, dataPort);
+
+            dataListener.Start();
+            dataListener.BeginAcceptTcpClient(HandleDataConnection, dataListener);
 
             writer.WriteLine("[+] Connected successfully with IP address " + remoteEndPoint.Address + "\r\n");
             writer.Flush();
