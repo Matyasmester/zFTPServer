@@ -1,10 +1,12 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading.Tasks;
+using System.Xml.Linq;
 
 namespace FTPServer
 {
@@ -66,7 +68,7 @@ namespace FTPServer
         {
             string response = "[?] Command not found.";
 
-            string[] split = command.Split(' ');
+            string[] split = command.Split(' ', 2);
 
             string cmd = split[0].ToUpperInvariant();
             string? args = split.Length > 1 ? split[1] : null;
@@ -89,6 +91,9 @@ namespace FTPServer
                 case "RETR":
                 case "GET":
                     response = Retrieve(args).Result;
+                    break;
+                case "UPLOAD":
+                    response = ReceiveAndSaveFile(args).Result;
                     break;
                 default:
                     break;
@@ -133,13 +138,20 @@ namespace FTPServer
             }
             else
             {
-                FileInfo fileInfo = new FileInfo(fullPath);
-                
-                byte[] bytes = EncodeSingleFile(fileInfo);
+                try
+                {
+                    FileInfo fileInfo = new FileInfo(fullPath);
 
-                SendBytes(bytes, dataStream);
+                    byte[] bytes = EncodeSingleFile(fileInfo);
 
-                response = "[+] Successfully retrieved file.";
+                    SendBytes(bytes, dataStream);
+
+                    response = "[+] Successfully retrieved file " + fileName;
+                }
+                catch (Exception) 
+                {
+                    response = "[!] Error retrieving file " + fileName;
+                }
             }
 
             return response;
@@ -167,6 +179,48 @@ namespace FTPServer
                 bSent += currentSize;
                 bLeft -= currentSize;
             }
+        }
+
+        private async Task<string> ReceiveAndSaveFile(string path)
+        {
+            int bufferSize = 1024;
+
+            while (dataClient == null) await Task.Delay(40);
+
+            NetworkStream dataStream = dataClient.GetStream();
+
+            byte[] fileSizeBytes = new byte[4];
+            dataStream.ReadAsync(fileSizeBytes, 0, 4).Wait();
+
+            int fileSize = BitConverter.ToInt32(fileSizeBytes, 0);
+
+            int bytesLeft = fileSize;
+            byte[] fileContent = new byte[fileSize];
+
+            int bytesRead = 0;
+
+            while (bytesLeft > 0)
+            {
+                int currentSize = Math.Min(bytesLeft, bufferSize);
+
+                if (dataClient.Available < currentSize) currentSize = dataClient.Available;
+
+                await dataStream.ReadAsync(fileContent, bytesRead, currentSize);
+
+                bytesRead += currentSize;
+                bytesLeft -= currentSize;
+            }
+
+            FileInfo info = new FileInfo(path);
+            string name = info.Name;
+
+            try { File.WriteAllBytes(name, fileContent); }
+            catch (Exception)
+            {
+                return "[!] Error saving file " + name;
+            }
+
+            return "[+] Succesfully uploaded and saved file " + name;
         }
 
         private byte[] EncodeSingleFile(FileInfo info)
