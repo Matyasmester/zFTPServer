@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection.Emit;
 using System.Text;
 using System.Threading.Tasks;
 using System.Xml.Linq;
@@ -20,10 +21,14 @@ namespace FTPServer
         private readonly string LOG_PATH = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ftpserverlog.txt");
 
         private static readonly string SharingFolderName = "ToShare";
-        private readonly string SharingFolderPath = Path.Combine(Directory.GetCurrentDirectory(), SharingFolderName);
+        private static readonly string SharingFolderPath = Path.Combine(Directory.GetCurrentDirectory(), SharingFolderName);
+
+        private string recursiveDirectoryListing = SharingFolderName + Environment.NewLine;
 
         private const int defaultPort = 5555;
         private int dataPort;
+
+        private int DefaultDirectoryDepth = SharingFolderPath.Split(Path.DirectorySeparatorChar).Length;
 
         public FtpServer(IPAddress IP, int port, int dataPort)
         {
@@ -94,6 +99,11 @@ namespace FTPServer
                     break;
                 case "UPLOAD":
                     response = ReceiveAndSaveFile(args).Result;
+                    break;
+                case "RECDIR":
+                    UpdateRecursiveDirectoryListing(SharingFolderPath);
+                    response = recursiveDirectoryListing;
+                    ResetRecursiveDirectoryListing();
                     break;
                 default:
                     break;
@@ -299,6 +309,35 @@ namespace FTPServer
             }
 
             return retval;
+        }
+
+        private void UpdateRecursiveDirectoryListing(string path)
+        {
+            int level = path.Split(Path.DirectorySeparatorChar).Length - DefaultDirectoryDepth;
+            
+            foreach(string entry in Directory.GetFileSystemEntries(path))
+            {
+                if (Directory.Exists(entry))
+                {
+                    DirectoryInfo info = new DirectoryInfo(entry);
+
+                    recursiveDirectoryListing += level + ":" + info.Name + Environment.NewLine;
+
+                    UpdateRecursiveDirectoryListing(entry);
+                }
+
+                if (File.Exists(entry))
+                {
+                    FileInfo info = new FileInfo(entry);
+
+                    recursiveDirectoryListing += level + ":" + info.Name + Environment.NewLine;
+                }
+            }
+        }
+
+        private void ResetRecursiveDirectoryListing()
+        {
+            recursiveDirectoryListing = SharingFolderName + Environment.NewLine;
         }
 
         private void HandleDataConnection(IAsyncResult result)
