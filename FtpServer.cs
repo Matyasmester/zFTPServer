@@ -1,9 +1,11 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Numerics;
 using System.Reflection.Emit;
 using System.Text;
 using System.Threading.Tasks;
@@ -100,6 +102,9 @@ namespace FTPServer
                 case "UPLOAD":
                     response = ReceiveAndSaveFile(args).Result;
                     break;
+                case "FUPLOAD":
+                    response = ReceiveAndSaveFolder(args).Result;
+                    break;
                 case "RECDIR":
                     UpdateRecursiveDirectoryListing(SharingFolderPath);
                     response = recursiveDirectoryListing;
@@ -143,7 +148,6 @@ namespace FTPServer
 
             if (Directory.Exists(fullPath))
             {
-                DirectoryInfo dirInfo = new DirectoryInfo(fullPath);
                 response = "Later lol";
             }
             else
@@ -189,6 +193,48 @@ namespace FTPServer
                 bSent += currentSize;
                 bLeft -= currentSize;
             }
+        }
+
+        private async Task<string> ReceiveAndSaveFolder(string path)
+        {
+            string response = string.Empty;
+
+            string name = new DirectoryInfo(path).Name;
+
+            string prevDirectory = Directory.GetCurrentDirectory();
+            string directoryPath = Path.Combine(prevDirectory, name);
+
+            if(!Directory.Exists(directoryPath)) Directory.CreateDirectory(directoryPath);
+
+            Directory.SetCurrentDirectory(directoryPath);
+
+            while (dataClient == null) await Task.Delay(40);
+
+            NetworkStream dataStream = dataClient.GetStream();
+
+            byte[] fileNamesLengthBytes = new byte[4];
+            dataStream.ReadAsync(fileNamesLengthBytes, 0, fileNamesLengthBytes.Length).Wait();
+
+            int fileNamesLen = BitConverter.ToInt32(fileNamesLengthBytes);
+
+            byte[] fileNamesBytes = new byte[fileNamesLen];
+
+            dataStream.ReadAsync(fileNamesBytes, 0, fileNamesLen).Wait();
+
+            string fileNames = Encoding.UTF8.GetString(fileNamesBytes);
+            string[] split = fileNames.Split("\0");
+
+            foreach(string fileName in split)
+            {
+                if(string.IsNullOrEmpty(fileName)) continue;
+
+                string currPath = Path.Combine(directoryPath, fileName);
+                response += await ReceiveAndSaveFile(currPath);
+            }
+
+            Directory.SetCurrentDirectory(prevDirectory);
+
+            return response;
         }
 
         private async Task<string> ReceiveAndSaveFile(string path)
