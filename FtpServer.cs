@@ -30,8 +30,6 @@ namespace FTPServer
         private const int defaultPort = 5555;
         private int dataPort;
 
-        private int DefaultDirectoryDepth = SharingFolderPath.Split(Path.DirectorySeparatorChar).Length;
-
         public FtpServer(IPAddress IP, int port, int dataPort)
         {
             listener = new TcpListener(IP, port);
@@ -121,12 +119,25 @@ namespace FTPServer
         {
             string errorResponse = string.Empty;
 
-            if(!IsValidPath(path, ref errorResponse)) return errorResponse;
+            string? fullPath;
+            if(!IsValidPath(path, ref errorResponse))
+            {
+                fullPath = TryRectifyPath(path, ref errorResponse);
 
-            string fullPath = FullyQualifyPath(path);
+                if (fullPath == null) return errorResponse; 
+            }
+
+            else fullPath = FullyQualifyPath(path);
             Directory.SetCurrentDirectory(fullPath);
 
             return "[+] Directory successfully changed to " + Directory.GetCurrentDirectory();
+        }
+
+        private string? TryRectifyPath(string path, ref string errorResponse)
+        {
+            string defaultPath = Path.Combine(SharingFolderPath, path.Replace(SharingFolderName + Path.DirectorySeparatorChar, ""));
+            if (!IsValidPath(defaultPath, ref errorResponse)) return null;
+            else return defaultPath;
         }
 
         private string FullyQualifyPath(string path)
@@ -138,9 +149,14 @@ namespace FTPServer
         private async Task<string> Retrieve(string fileName)
         {
             string response = string.Empty;
-            string fullPath = FullyQualifyPath(fileName);
+            string? fullPath = FullyQualifyPath(fileName);
 
-            if(!IsValidPath(fullPath, ref response)) return response;
+            if (!IsValidPath(fullPath, ref response)) 
+            {
+                fullPath = TryRectifyPath(fullPath, ref response);
+
+                if(fullPath == null) return response;
+            } 
 
             while (dataClient == null) await Task.Delay(40);
 
@@ -359,15 +375,15 @@ namespace FTPServer
 
         private void UpdateRecursiveDirectoryListing(string path)
         {
-            int level = path.Split(Path.DirectorySeparatorChar).Length - DefaultDirectoryDepth;
-            
+            DirectoryInfo rootInfo = new DirectoryInfo(path);
+
             foreach(string entry in Directory.GetFileSystemEntries(path))
             {
                 if (Directory.Exists(entry))
                 {
                     DirectoryInfo info = new DirectoryInfo(entry);
 
-                    recursiveDirectoryListing += level + ":" + info.Name + Environment.NewLine;
+                    recursiveDirectoryListing += rootInfo.Name + ":" + info.Name + Environment.NewLine;
 
                     UpdateRecursiveDirectoryListing(entry);
                 }
@@ -376,7 +392,7 @@ namespace FTPServer
                 {
                     FileInfo info = new FileInfo(entry);
 
-                    recursiveDirectoryListing += level + ":" + info.Name + Environment.NewLine;
+                    recursiveDirectoryListing += rootInfo.Name + ":" + info.Name + Environment.NewLine;
                 }
             }
         }
