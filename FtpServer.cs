@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
@@ -35,7 +36,7 @@ namespace FTPServer
             listener = new TcpListener(IP, port);
 
             this.dataPort = dataPort;
-
+            
             if(!Directory.Exists(SharingFolderPath)) Directory.CreateDirectory(SharingFolderPath);
 
             Directory.SetCurrentDirectory(SharingFolderPath);
@@ -95,7 +96,7 @@ namespace FTPServer
                     break;
                 case "RETR":
                 case "GET":
-                    response = Retrieve(args).Result;
+                    response = SendFileToClient(args).Result;
                     break;
                 case "UPLOAD":
                     response = ReceiveAndSaveFile(args).Result;
@@ -107,6 +108,9 @@ namespace FTPServer
                     UpdateRecursiveDirectoryListing(SharingFolderPath);
                     response = recursiveDirectoryListing;
                     ResetRecursiveDirectoryListing();
+                    break;
+                case "RSTDIR":
+                    response = ChangeWorkingDirectory(SharingFolderPath);
                     break;
                 default:
                     break;
@@ -146,7 +150,7 @@ namespace FTPServer
             else return Path.Combine(Directory.GetCurrentDirectory(), path);
         }
 
-        private async Task<string> Retrieve(string fileName)
+        private async Task<string> SendFileToClient(string fileName)
         {
             string response = string.Empty;
             string? fullPath = FullyQualifyPath(fileName);
@@ -162,11 +166,7 @@ namespace FTPServer
 
             NetworkStream dataStream = dataClient.GetStream();
 
-            if (Directory.Exists(fullPath))
-            {
-                response = "Later lol";
-            }
-            else
+            if(File.Exists(fullPath))
             {
                 try
                 {
@@ -213,48 +213,36 @@ namespace FTPServer
 
         private async Task<string> ReceiveAndSaveFolder(string path)
         {
-            string response = string.Empty;
+            string name = Path.GetFileName(path);
+            string zipName = name + ".zip";
 
-            string name = new DirectoryInfo(path).Name;
+            string currDirectory = Directory.GetCurrentDirectory();
+            string sourcePath = Path.Combine(currDirectory, zipName);
 
-            string prevDirectory = Directory.GetCurrentDirectory();
-            string directoryPath = Path.Combine(prevDirectory, name);
+            await ReceiveAndSaveFile(sourcePath);
 
-            if(!Directory.Exists(directoryPath)) Directory.CreateDirectory(directoryPath);
+            string destPath = Path.Combine(currDirectory, name);
 
-            Directory.SetCurrentDirectory(directoryPath);
+            if(Directory.Exists(destPath)) Directory.Delete(destPath, true);
 
-            while (dataClient == null) await Task.Delay(40);
-
-            NetworkStream dataStream = dataClient.GetStream();
-
-            byte[] fileNamesLengthBytes = new byte[4];
-            dataStream.ReadAsync(fileNamesLengthBytes, 0, fileNamesLengthBytes.Length).Wait();
-
-            int fileNamesLen = BitConverter.ToInt32(fileNamesLengthBytes);
-
-            byte[] fileNamesBytes = new byte[fileNamesLen];
-
-            dataStream.ReadAsync(fileNamesBytes, 0, fileNamesLen).Wait();
-
-            string fileNames = Encoding.UTF8.GetString(fileNamesBytes);
-            string[] split = fileNames.Split("\0");
-
-            foreach(string fileName in split)
+            try 
             {
-                if(string.IsNullOrEmpty(fileName)) continue;
-
-                string currPath = Path.Combine(directoryPath, fileName);
-                response += await ReceiveAndSaveFile(currPath);
+                ZipFile.ExtractToDirectory(sourcePath, destPath);
+            }
+            catch (Exception ex)
+            {
+                return "Failed to receive folder " + Environment.NewLine + ex.Message;
             }
 
-            Directory.SetCurrentDirectory(prevDirectory);
+            File.Delete(sourcePath);
 
-            return response;
+            return "Successfully received and saved folder " + name;
         }
 
         private async Task<string> ReceiveAndSaveFile(string path)
         {
+            string fileName = Path.GetFileName(path);
+
             int bufferSize = 1024;
 
             while (dataClient == null) await Task.Delay(40);
@@ -283,16 +271,13 @@ namespace FTPServer
                 bytesLeft -= currentSize;
             }
 
-            FileInfo info = new FileInfo(path);
-            string name = info.Name;
-
-            try { File.WriteAllBytes(name, fileContent); }
-            catch (Exception)
+            try { File.WriteAllBytes(fileName, fileContent); }
+            catch (Exception ex)
             {
-                return "[!] Error saving file " + name;
+                return "[!] Error saving file " + fileName + Environment.NewLine + ex.Message;
             }
 
-            return "[+] Succesfully uploaded and saved file " + name;
+            return "[+] Succesfully uploaded and saved file " + fileName;
         }
 
         private byte[] EncodeSingleFile(FileInfo info)
@@ -302,6 +287,8 @@ namespace FTPServer
             byte[] buffer = new byte[stream.Length];
 
             stream.Read(buffer, 0, buffer.Length);
+
+            stream.Dispose();
 
             return buffer;
         }
